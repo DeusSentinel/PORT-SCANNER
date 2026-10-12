@@ -107,7 +107,7 @@ def summary_report():
 if __name__ == "__main__":
     args = initialize()
     tcp = threading.Thread(target=TCP_Scan, args=(args,))
-    udp = threading.Thread(target=UDP_Scan, args=(args,))  s
+    udp = threading.Thread(target=UDP_Scan, args=(args,))  
     tcp.start()
     udp.start()
     tcp.join()
