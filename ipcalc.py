@@ -2,8 +2,8 @@ import socket
 import argparse
 import errno
 import threading
-udp_summary = []
-tcp_summary = []
+import tabulate
+import math
 
 # ==========================================
 # TCP PORT SERVICES DICTIONARY
@@ -49,8 +49,9 @@ udp_ports = {
     5353: "mDNS (Multicast DNS - Local Network Device Discovery)"
 }
 
-
 def initialize():
+
+    #Adds positional arguments 
     parser = argparse.ArgumentParser(prog="TARGET", description= "Selects target IPV4 address", epilog= "Accepts target IP address")
     parser.add_argument("target", type= str, help= "Enter the target IP address")
     parser.add_argument("start_port", type= int, help="Enter the beginning of the range of s")
@@ -58,59 +59,142 @@ def initialize():
     parser.add_argument("time", type= float, help= "Set the timeout value")
     args = parser.parse_args()
 
-    while True:
-        if args.start_port > args.end_port:
-            raise ValueError("Invalid starting  number. Must be less than end .")
-        elif args.start_port <= 0:
-            raise ValueError("Invlaid starting  number. Must be greater 0.")
-        elif args.end_port > 65535:
-            raise ValueError("Invalid end . number. Valid s end at 65535.")
-        elif args.time <= 0:
-            raise ValueError("Invalid timeout value. Must be a positive non-zero number.")
-        break
+    #Input validation to accept valid port numbers between 1 and 65535
+    # It also ensures the timeout value is a positive non-zero number
+    if args.target.replace(".", "").isdigit() == False:
+        raise ValueError("Invalid target. Must be integer values.")
+ 
+    if not( 65535 > args.start_port > 0):
+        raise ValueError("Invlaid starting  number. Starting port must be between 1 and 65535")
+    elif not (0 < args.end_port < 65536):
+        raise ValueError("Invalid end . number. Ending port must be between 1 and 65535.")
+    elif args.start_port > args.end_port:
+        raise ValueError("Invalid starting  number. Must be less than end .")
+    elif not math.isfinite(args.time) or args.time <= 0:
+        raise ValueError("Invalid timeout value. Must be a positive non-zero number.")
+    
+    #Returns the CLI positional arguments
     return args
 
-def TCP_Scan (args):
-    for i in range(args.start_port, (args.end_port + 1)):   
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(args.time)
-            tcp_target = s.connect_ex((args.target, i))
-            if tcp_target == 0 :
-                tcp_summary.append((i, tcp_ports.get(args.start_port, "Unknown Service")))
-            elif tcp_target == errno.ECONNREFUSED:
-                print(f" {i} is closed.")
-            elif tcp_target == errno.ETIMEDOUT:
-                print(f" {i} is filtered.")
 
+def TCP_Scan (args):
+    results_tcp = []
+    #For loop that iterates over each port in the given range
+    for i in range(args.start_port, (args.end_port + 1)):   
+
+        #Creates a TCP socket that usees IPV4 IP addresses
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+            #Set a timeout value that jumps to next port if the port doesn't respond within the specified time 
+            s.settimeout(args.time)
+
+            #Establishes a TCP connection to given IP address on the given port
+            tcp_target = s.connect_ex((args.target, i))
+
+            #Handles the results_tcp that the connection may return
+            # IF the connection is successful, connect_ex will return 0.
+            if tcp_target == 0 :
+
+                #If it is a common port, it is then appended to the summary table with the appropriate Service
+                #If it is uncommon, it is still appended to the summary table but with the service "Unknown Service"
+                data_tcp = [f"{i}", "Open", tcp_ports.get(i, "Unknown Service")]
+                results_tcp.append(data_tcp)
+
+            #If the port is closed, the "errno.ECONNREFUSED" will be returned and the error message will be printed.
+
+            elif tcp_target == errno.ECONNREFUSED:
+                data_tcp = [f"{i}", "Closed", tcp_ports.get(i, "Unknown Service")]
+                results_tcp.append(data_tcp)
+
+            #If the port is has not responded in the given time it is assumed to be filtered and,
+            # the "errno.ETIMEOUT" will be returned and the error message will be printed.
+            elif tcp_target == errno.ETIMEDOUT:
+                data_tcp = [f"{i}", "Filtered", tcp_ports.get(i, "Unknown Service")]
+                results_tcp.append(data_tcp)
+            else:
+                data_tcp = [f"{i}", "Unknown", tcp_ports.get(i, "Unknown Service")]
+                results_tcp.append(data_tcp)
+    return results_tcp
+
+def run_tcp(args, results):
+    results["tcp"] = TCP_Scan(args)
+
+def run_udp(args, results):
+    results["udp"] = UDP_Scan(args)
+    
+              
         
 def UDP_Scan(args):
+    results_udp = []
+    #For loop that iterates over each port in the given range
     for i in range(args.start_port, (args.end_port + 1)):
+        
+        #Creates a UDP socket that uses IPV4 IP address
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as u:
+
+            #Set a timeout value that jumps to next port if the port doesn't respond within the specified time 
             u.settimeout(args.time)
-            u.sendto(b"hello", (args.target, i))
             try:
+
+                #Sends a message to the "server" using the given IP and port number
+                u.sendto(b"hello", (args.target, i))
+
+                #Collects the "response" [up to 1024 bytes] from the "server" and the IPV4 address
                 data, address = u.recvfrom(1024)
-                udp_summary.append((i, udp_ports.get(i, "Unknown Service")))
+
+                #If it is a common port, it is then added to the summary table with the appropriate Service
+                #If it is uncommon, it is still added to the summary table but with the service "Unknown Service"
+                data_udp = [f"{i}", "Open", udp_ports.get(i, "Unknown Service")]
+                results_udp.append(data_udp)
+                
+            # The recvfrom() function will return a "ConnectionRefusedError" if the port is closed.
             except ConnectionRefusedError:
-                    print(f" {i} is closed.")
+                    data_udp = [f"{i}", "Closed", udp_ports.get(i, "Unknown Service")]
+                    results_udp.append(data_udp)
+            # If the "server" does not respond in the specified time, it is assumed to be filtered.
             except socket.timeout:
-                print(f"No respone.  {i} may be filtered.")
+                data_udp = [f"{i}", "No Response", udp_ports.get(i, "Unknown Service")]
+                results_udp.append(data_udp)
+    return results_udp
             
     
+#Function that prints the summary
+def summary_report(results_udp, results_tcp):
+    udp_table = tabulate.tabulate(
+    results_udp,
+    headers = ["Port", "State", "Service"],
+    tablefmt = "grid"
 
-def summary_report():
-    print(udp_summary)
-    print(tcp_summary)
+)
+    tcp_table = tabulate.tabulate(
+        results_tcp,
+        headers = ["Port", "State", "Service"],
+        tablefmt = "grid"
+)
+    print(udp_table)
+    print(tcp_table)
 
         
 
 if __name__ == "__main__":
+    results = {}
+    #Stores the args return from the initialize() function
     args = initialize()
-    tcp = threading.Thread(target=TCP_Scan, args=(args,))
-    udp = threading.Thread(target=UDP_Scan, args=(args,))  
+
+    #Creates a thread for the TCP_Scan function, with the parameters
+    tcp = threading.Thread(target=run_tcp, args=(args,results))
+
+    #Creates a thread for the TCP_Scan function, with the parameters
+    udp = threading.Thread(target=run_udp, args=(args, results))  
+
+    #Starts the thread
     tcp.start()
     udp.start()
+
+    #Ensures that the main thread does not continue until the two threads are finished.
     tcp.join()
     udp.join()
-    summary_report()
+    
+    #Prints the summary
+    summary_report(results["udp"], results["tcp"])
     print("\nJOB DONE.")
